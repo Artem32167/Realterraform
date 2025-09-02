@@ -1,0 +1,13 @@
+# Local state & working dirs
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+# Plans
+*.tfplan
+
+# Local env files (if you ever create them)
+*.auto.tfvars
+*.env
