@@ -1,4 +1,4 @@
-# Terraform Azure Basics — Minimal Scaffold v2.0
+# Terraform Azure Basics — Minimal Scaffold v3.0
 
 ## Prereqs
 - Terraform ~> 1.7
