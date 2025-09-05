@@ -3,22 +3,24 @@ name: Terraform Checks
 on:
   pull_request:
     branches: [ main ]
-    paths:
-      - '**/*.tf'
+  push:
+    branches: [ main ]
 
 jobs:
   terraform-checks:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
-      - name: Terraform fmt check
+      - name: Terraform fmt (recursive)
         run: terraform fmt -check -recursive
+
+      - name: Terraform init (no backend)
+        run: terraform init -backend=false -input=false
 
       - name: Terraform validate
         run: terraform validate
