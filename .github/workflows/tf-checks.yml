@@ -16,6 +16,14 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
+        # --- TFLint install (official action) ---
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+
+      # --- Run TFLint (root) ---
+      - name: TFLint (root)
+        run: tflint --init && tflint
+
       - name: Terraform fmt (recursive)
         run: terraform fmt -check -recursive
 
