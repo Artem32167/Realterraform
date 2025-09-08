@@ -36,8 +36,3 @@ variable "subnet_prefix" {
   type        = string
   default     = "10.10.1.0/24"
 }
-variable "test" {
-  description = "test"
-  type        = string
-  default     = "test"
-}
