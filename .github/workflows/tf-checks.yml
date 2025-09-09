@@ -24,7 +24,7 @@ jobs:
         run: terraform fmt -check -recursive
 
       - name: Terraform init (speculative; no backend)
-        run: terraform init -backend=false -input=false
+        run: terraform init -input=false -reconfigure -backend-config="skip_credentials_validation=true" -backend-config="use_azuread_auth=false"
 
       # Pick your default env file for PR previews (e.g., dev)
       - name: Terraform plan (speculative)
