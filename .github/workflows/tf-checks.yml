@@ -6,7 +6,7 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write  # needed to post a PR comment
+  pull-requests: write
 
 jobs:
   plan:
@@ -18,40 +18,64 @@ jobs:
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
 
-      # Optional: fast hygiene before planning
+      # Make a temp working dir and swap backend to local for this PR run
+      - name: Prepare temp working dir (local backend)
+        run: |
+          rm -rf /tmp/tf && mkdir -p /tmp/tf
+          rsync -a --exclude='.git' . /tmp/tf/
+          # remove real backend file if present
+          rm -f /tmp/tf/backend.tf
+          # write local backend
+          cat > /tmp/tf/backend.tf <<'EOF'
+          terraform {
+            backend "local" {}
+          }
+          EOF
+
       - name: Terraform fmt (check)
+        working-directory: /tmp/tf
         run: terraform fmt -check -recursive
 
-      - name: Terraform init (speculative; no backend)
-        run: terraform init -input=false -reconfigure -backend-config="skip_credentials_validation=true" -backend-config="use_azuread_auth=false"
+      - name: Terraform init
+        working-directory: /tmp/tf
+        run: terraform init -input=false -reconfigure
 
-      # Pick your default env file for PR previews (e.g., dev)
+      - name: Terraform validate
+        working-directory: /tmp/tf
+        run: terraform validate -no-color
+
       - name: Terraform plan (speculative)
-        id: tfplan
+        id: plan
+        working-directory: /tmp/tf
+        shell: bash
         run: |
-          set -e
-          # capture stdout for PR comment
-          PLAN_OUTPUT=$(terraform plan -no-color -input=false -var-file=env/prod.tfvars || true)
-          echo "PLAN<<EOF" >> $GITHUB_OUTPUT
-          echo "$PLAN_OUTPUT" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-          # exit non-zero if plan failed for real (syntax, provider, etc.)
-          terraform validate
+          set -o pipefail
+          terraform plan -no-color -input=false \
+            -lock=false \
+            # -var-file=env/dev.tfvars \
+            | tee /tmp/plan.txt
+          # expose for next step
+          {
+            echo 'PLAN<<EOF'
+            cat /tmp/plan.txt
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
 
       - name: Comment plan on PR
-        if: always()
         uses: actions/github-script@v7
         with:
           script: |
             const body = [
-              '## Terraform Plan (speculative, no backend)',
+              '## Terraform Plan (speculative, local backend)',
               '',
               '```txt',
-              process.env.PLAN,
+              process.env.PLAN || '(no output)',
               '```',
               '',
-              '_Note: this PR plan runs without the remote backend for speed/safety. We will upgrade to backend + OIDC for real state-aware diffs._'
+              '_Note: PR plan uses a local backend and does not touch real state._'
             ].join('\n');
             await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -60,4 +84,4 @@ jobs:
               body
             });
         env:
-          PLAN: ${{ steps.tfplan.outputs.PLAN }}
+          PLAN: ${{ steps.plan.outputs.PLAN }}
