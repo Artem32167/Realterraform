@@ -19,7 +19,7 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.6.6
+           terraform_version: 1.7.5
 
       # Make a temp working dir and swap backend to local for this PR run
       - name: Prepare temp working dir (local backend)
