@@ -50,10 +50,10 @@ jobs:
           echo "After replace, any backend lines:"
           grep -R --line-number --no-messages 'backend *"' /tmp/tf || true
 
-      # Init with backend disabled
-      - name: Terraform init (no backend)
+     # Terraform init (initialize local backend)
+      - name: Terraform init
         working-directory: /tmp/tf
-        run: terraform init -input=false -backend=false -reconfigure
+        run: terraform init -input=false -reconfigure
 
       # Check formatting
       - name: Terraform fmt (check)
