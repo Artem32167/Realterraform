@@ -13,29 +13,59 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      # Checkout repo
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: hashicorp/setup-terraform@v3
+      # Install Terraform
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.7.5
 
+      # Prepare clean temp working directory
       - name: Prepare temp working dir
         run: |
           rm -rf /tmp/tf && mkdir -p /tmp/tf
-          rsync -a --exclude='.git' . /tmp/tf/
+          git ls-files -z | xargs -0 -I{} install -D "{}" "/tmp/tf/{}"
 
+      # Remove any old state/config
+      - name: Ensure no previous init artifacts
+        run: |
+          rm -rf /tmp/tf/.terraform /tmp/tf/.terraform.lock.hcl || true
+
+      # Debug: see if any backend "azurerm" blocks exist
+      - name: Debug – find backend blocks
+        run: |
+          echo "Scanning /tmp/tf for backend blocks:"
+          grep -R --line-number --no-messages 'terraform *{[^}]*backend' /tmp/tf || true
+          echo "Scanning for azurerm backend mentions:"
+          grep -R --line-number --no-messages 'backend *"azurerm"' /tmp/tf || true
+
+      # Force-replace azurerm backend with local (safety net)
+      - name: Force backend to local
+        run: |
+          find /tmp/tf -name '*.tf' -print0 \
+            | xargs -0 sed -i 's/backend *"azurerm"/backend "local"/g'
+          echo "After replace, any backend lines:"
+          grep -R --line-number --no-messages 'backend *"' /tmp/tf || true
+
+      # Init with backend disabled
+      - name: Terraform init (no backend)
+        working-directory: /tmp/tf
+        run: terraform init -input=false -backend=false -reconfigure
+
+      # Check formatting
       - name: Terraform fmt (check)
         working-directory: /tmp/tf
         run: terraform fmt -check -recursive
 
-      - name: Terraform init (no backend)
-        working-directory: /tmp/tf
-        run: terraform init -input=false -backend=false
-
+      # Validate configuration
       - name: Terraform validate
         working-directory: /tmp/tf
         run: terraform validate -no-color
 
+      # Run speculative plan (always safe for PR)
       - name: Terraform plan (speculative)
         id: plan
         working-directory: /tmp/tf
@@ -50,20 +80,19 @@ jobs:
             echo EOF
           } >> "$GITHUB_OUTPUT"
 
+      # Comment the plan output back on the PR
       - name: Comment plan on PR
         uses: actions/github-script@v7
-        env:
-          PLAN: ${{ steps.plan.outputs.PLAN }}
         with:
           script: |
             const body = [
-              '## Terraform Plan (speculative, no backend)',
+              '## Terraform Plan (speculative, local backend)',
               '',
               '```txt',
               process.env.PLAN || '(no output)',
               '```',
               '',
-              '_Note: PR plan runs without any backend and does not touch real state._'
+              '_Note: PR plan uses a local backend and does not touch real state._'
             ].join('\n');
             await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -71,3 +100,5 @@ jobs:
               issue_number: context.payload.pull_request.number,
               body
             });
+        env:
+          PLAN: ${{ steps.plan.outputs.PLAN }}
