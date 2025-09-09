@@ -32,7 +32,7 @@ jobs:
         run: |
           set -e
           # capture stdout for PR comment
-          PLAN_OUTPUT=$(terraform plan -no-color -input=false -var-file=env/dev.tfvars || true)
+          PLAN_OUTPUT=$(terraform plan -no-color -input=false -var-file=env/prod.tfvars || true)
           echo "PLAN<<EOF" >> $GITHUB_OUTPUT
           echo "$PLAN_OUTPUT" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
