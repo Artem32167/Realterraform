@@ -1,4 +1,4 @@
-name: TF PR Plan (state-aware)
+name: Terraform PR Checks
 
 on:
   pull_request:
@@ -7,6 +7,7 @@ on:
       - '**/*.tf'
       - '**/*.tfvars'
       - 'backend/**'
+      - '.tflint.hcl'
       - '.github/workflows/**'
   workflow_dispatch:
 
@@ -15,17 +16,37 @@ permissions:
   pull-requests: write
 
 jobs:
-  plan:
+  # ----------------------------
+  # 1) Lint: TFLint (blocks PR)
+  # ----------------------------
+  tflint:
+    name: TFLint
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    # Azure auth for Terraform provider (Service Principal via repo secrets)
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+
+      - name: TFLint init (download rules)
+        run: tflint --init
+
+      - name: Run TFLint (fail on findings)
+        run: tflint -f compact .
+
+  # ---------------------------------------
+  # 2) Plan: state-aware (uses remote state)
+  # ---------------------------------------
+  plan:
+    name: Terraform Plan (state-aware)
+    runs-on: ubuntu-latest
+    needs: tflint   # <-- require lint to pass before plan
     env:
       ARM_TENANT_ID:        ${{ secrets.ARM_TENANT_ID }}
       ARM_SUBSCRIPTION_ID:  ${{ secrets.ARM_SUBSCRIPTION_ID }}
       ARM_CLIENT_ID:        ${{ secrets.ARM_CLIENT_ID }}
       ARM_CLIENT_SECRET:    ${{ secrets.ARM_CLIENT_SECRET }}
-
-      # optional: keep output non-interactive
       TF_INPUT: "false"
 
     steps:
@@ -37,7 +58,6 @@ jobs:
         with:
           terraform_version: 1.7.5
 
-      # Helpful to see where we run and what files exist
       - name: Debug tree
         run: |
           pwd
@@ -45,7 +65,6 @@ jobs:
           ls -la backend || true
           ls -la env || true
 
-      # Init against the real remote backend (pick dev/prod)
       - name: Terraform init (remote backend)
         run: |
           terraform init -input=false -reconfigure \
@@ -64,21 +83,13 @@ jobs:
           set -o pipefail
           terraform plan -no-color -input=false -lock=true \
             -detailed-exitcode \
-            -var-file=env/prod.tfvars \
+            -var-file=env/dev.tfvars \
             | tee plan.txt
           ec=$?
-          {
-            echo 'PLAN<<EOF'
-            cat plan.txt
-            echo EOF
-          } >> "$GITHUB_OUTPUT"
-          # exit 1 only on real errors
-          if [ $ec -eq 1 ]; then
-            exit 1
-          fi
-          # if ec==2 (changes), still succeed so reviewers can see the plan
+          { echo 'PLAN<<EOF'; cat plan.txt; echo EOF; } >> "$GITHUB_OUTPUT"
+          if [ $ec -eq 1 ]; then exit 1; fi
 
-      - name: Comment plan to PR
+      - name: Comment plan to PR (sticky)
         if: always()
         uses: actions/github-script@v7
         env:
@@ -92,10 +103,8 @@ jobs:
               process.env.PLAN || '(no output)',
               '```',
               '',
-              '_This plan used the AzureRM backend and your repo secrets (ARM_*). No apply was performed._'
+              '_Used AzureRM backend with repo secrets (ARM_*). No apply was performed._'
             ].join('\n');
-
-            // Update existing bot comment if present ("sticky" comment)
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -103,7 +112,6 @@ jobs:
             });
             const marker = 'Terraform Plan (state-aware, remote backend)';
             const existing = comments.find(c => c.user.type === 'Bot' && c.body && c.body.includes(marker));
-
             if (existing) {
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
