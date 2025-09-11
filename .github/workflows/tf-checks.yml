@@ -33,7 +33,7 @@ jobs:
         run: tflint --init
 
       - name: Run TFLint (fail on findings)
-        run: tflint -format compact
+        run: tflint --format compact --recursive
 
   # ---------------------------------------
   # 2) Plan: state-aware (uses remote state)
