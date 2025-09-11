@@ -33,10 +33,32 @@ jobs:
         run: tflint --init
 
       - name: Run TFLint (fail on findings)
-        run: tflint --format compact --recursive
+        run:  tflint --format compact --recursive
+  
+  # ----------------------------
+  # 2) Security scan: tfsec (parallel)
+  # ----------------------------
+  tfsec:
+    name: tfsec (security scan)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: .
+          format: sarif
+          soft_fail: true       # start soft; flip to false later
+      # Optional: publish to Security tab (if you set output_file above)
+      # - name: Upload tfsec SARIF
+      #   uses: github/codeql-action/upload-sarif@v2
+      #   with:
+      #     sarif_file: tfsec.sarif
 
   # ---------------------------------------
-  # 2) Plan: state-aware (uses remote state)
+  # 3) Plan: state-aware (uses remote state)
   # ---------------------------------------
   plan:
     name: Terraform Plan (state-aware)
