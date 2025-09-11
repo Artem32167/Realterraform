@@ -1,34 +1,121 @@
-name: Terraform Checks
+name: TF PR Plan (state-aware)
 
 on:
   pull_request:
     branches: [ main ]
-  push:
-    branches: [ main ]
+    paths:
+      - '**/*.tf'
+      - '**/*.tfvars'
+      - 'backend/**'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
 
 jobs:
-  terraform-checks:
+  plan:
     runs-on: ubuntu-latest
+
+    # Azure auth for Terraform provider (Service Principal via repo secrets)
+    env:
+      ARM_TENANT_ID:        ${{ secrets.ARM_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID:  ${{ secrets.ARM_SUBSCRIPTION_ID }}
+      ARM_CLIENT_ID:        ${{ secrets.ARM_CLIENT_ID }}
+      ARM_CLIENT_SECRET:    ${{ secrets.ARM_CLIENT_SECRET }}
+
+      # optional: keep output non-interactive
+      TF_INPUT: "false"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.5
 
-        # --- TFLint install (official action) ---
-      - name: Setup TFLint
-        uses: terraform-linters/setup-tflint@v4
+      # Helpful to see where we run and what files exist
+      - name: Debug tree
+        run: |
+          pwd
+          ls -la
+          ls -la backend || true
+          ls -la env || true
 
-      # --- Run TFLint (root) ---
-      - name: TFLint (root)
-        run: tflint --init && tflint
+      # Init against the real remote backend (pick dev/prod)
+      - name: Terraform init (remote backend)
+        run: |
+          terraform init -input=false -reconfigure \
+            -backend-config=backend/dev.backend.hcl
 
-      - name: Terraform fmt (recursive)
+      - name: Terraform fmt (check)
         run: terraform fmt -check -recursive
 
-      - name: Terraform init (no backend)
-        run: terraform init -backend=false -input=false
-
       - name: Terraform validate
-        run: terraform validate
+        run: terraform validate -no-color
+
+      - name: Terraform plan (state-aware)
+        id: plan
+        shell: bash
+        run: |
+          set -o pipefail
+          terraform plan -no-color -input=false -lock=true \
+            -detailed-exitcode \
+            -var-file=env/dev.tfvars \
+            | tee plan.txt
+          ec=$?
+          {
+            echo 'PLAN<<EOF'
+            cat plan.txt
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+          # exit 1 only on real errors
+          if [ $ec -eq 1 ]; then
+            exit 1
+          fi
+          # if ec==2 (changes), still succeed so reviewers can see the plan
+
+      - name: Comment plan to PR
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          PLAN: ${{ steps.plan.outputs.PLAN }}
+        with:
+          script: |
+            const body = [
+              '## Terraform Plan (state-aware, remote backend)',
+              '',
+              '```txt',
+              process.env.PLAN || '(no output)',
+              '```',
+              '',
+              '_This plan used the AzureRM backend and your repo secrets (ARM_*). No apply was performed._'
+            ].join('\n');
+
+            // Update existing bot comment if present ("sticky" comment)
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const marker = 'Terraform Plan (state-aware, remote backend)';
+            const existing = comments.find(c => c.user.type === 'Bot' && c.body && c.body.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body
+              });
+            }
