@@ -1,0 +1,44 @@
+name: Deploy to prod (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type 'DEPLOY' to confirm"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: ${{ github.event.inputs.confirm == 'DEPLOY' }}
+    runs-on: ubuntu-latest
+    environment: prod   # optional environment name
+    env:
+      ARM_TENANT_ID:        ${{ secrets.ARM_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID:  ${{ secrets.ARM_SUBSCRIPTION_ID }}
+      ARM_CLIENT_ID:        ${{ secrets.ARM_CLIENT_ID }}
+      ARM_CLIENT_SECRET:    ${{ secrets.ARM_CLIENT_SECRET }}
+      TF_INPUT: "false"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.5
+
+      - name: Restore Terraform plugin cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.terraform.d/plugin-cache
+          key: Linux-tfplugincache--${{ hashFiles('**/.terraform.lock.hcl') }}
+          restore-keys: |
+            Linux-tfplugincache--
+
+      - name: Terraform init (remote backend, prod)
+        run: terraform init -input=false -reconfigure -backend-config=backend/prod.backend.hcl
+
+      - name: Terraform apply (prod)
+        run: terraform apply -auto-approve -var-file=env/prod.tfvars
