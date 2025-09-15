@@ -79,6 +79,17 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.7.5
+      
+       # ---------- Terraform plugin cache (ONLY here) ----------
+      - name: Restore Terraform plugin cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.terraform.d/plugin-cache
+          key: ${{ runner.os }}-tfplugincache-${{ env.TF_VER }}-${{ hashFiles('**/.terraform.lock.hcl') }}
+          restore-keys: |
+            ${{ runner.os }}-tfplugincache-${{ env.TF_VER }}-
+            ${{ runner.os }}-tfplugincache-
+
 
       - name: Debug tree
         run: |
