@@ -1,4 +1,4 @@
-name: Terraform PR Checks
+name: Manual deploy to prod
 
 on:
   pull_request:
@@ -74,7 +74,7 @@ jobs:
 
     # Use the dev environment so the federated credential with subject
     # repo:Artsemi/Realterraform:environment:dev is matched
-    environment: dev
+    environment: prod
 
     env:
       TF_INPUT: "false"
@@ -127,7 +127,7 @@ jobs:
       - name: Terraform init (remote backend)
         run: |
           terraform init -input=false -reconfigure \
-            -backend-config=backend/dev.backend.hcl
+            -backend-config=backend/prod.backend.hcl
 
       - name: Terraform fmt (check)
         run: terraform fmt -check -recursive
@@ -142,7 +142,7 @@ jobs:
           set -o pipefail
           terraform plan -no-color -input=false -lock=true \
             -detailed-exitcode \
-            -var-file=env/dev.tfvars \
+            -var-file=env/prod.tfvars \
             | tee plan.txt
           ec=$?
           {
@@ -176,7 +176,7 @@ jobs:
               process.env.PLAN || '(no output)',
               '```',
               '',
-              '_Auth: GitHub OIDC → Entra federated credential (env **dev**). No apply performed._'
+              '_Auth: GitHub OIDC → Entra federated credential (env **prod**). No apply performed._'
             ].join('\n');
 
             const { data: comments } = await github.rest.issues.listComments({
