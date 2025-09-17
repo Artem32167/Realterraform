@@ -14,77 +14,51 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  id-token: write   # default for jobs; we still set it explicitly on plan
 
 jobs:
-  # ----------------------------
-  # 1) Lint: TFLint (blocks PR)
-  # ----------------------------
   tflint:
     name: TFLint
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: terraform-linters/setup-tflint@v4
+      - run: tflint --init
+      - run: tflint --format compact --recursive
 
-      - name: Setup TFLint
-        uses: terraform-linters/setup-tflint@v4
-
-      - name: TFLint init (download rules)
-        run: tflint --init
-
-      - name: Run TFLint (fail on findings)
-        run: tflint --format compact --recursive
-
-  # ----------------------------
-  # 2) Security scan: tfsec (parallel)
-  # ----------------------------
   tfsec:
     name: tfsec (security scan)
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Run tfsec
-        uses: aquasecurity/tfsec-action@v1.0.3
+      - uses: actions/checkout@v4
+      - uses: aquasecurity/tfsec-action@v1.0.3
         with:
           working_directory: .
           format: sarif
-          soft_fail: true   # set to 'false' later to block on findings
-      # Optional: publish SARIF to Security tab if you set an output file
-      # - name: Upload tfsec SARIF
-      #   uses: github/codeql-action/upload-sarif@v2
-      #   with:
-      #     sarif_file: tfsec.sarif
+          soft_fail: true
 
-  # ---------------------------------------
-  # 3) Plan: state-aware (uses remote state)
-  # ---------------------------------------
   plan:
     name: Terraform Plan (state-aware)
     runs-on: ubuntu-latest
-    needs:
-      - tflint
-      - tfsec
+    needs: [ tflint, tfsec ]
+
+    # 🔐 OIDC + env-scoped trust
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+    environment: prod   # must match your Entra federated credential (environment: dev)
+
     env:
-      # Azure auth for the azurerm provider
-      ARM_TENANT_ID:        ${{ secrets.ARM_TENANT_ID }}
-      ARM_SUBSCRIPTION_ID:  ${{ secrets.ARM_SUBSCRIPTION_ID }}
-      ARM_CLIENT_ID:        ${{ secrets.ARM_CLIENT_ID }}
-      ARM_CLIENT_SECRET:    ${{ secrets.ARM_CLIENT_SECRET }}
-      # Terraform non-interactive
       TF_INPUT: "false"
-      # Terraform plugin cache dir (used by cache restore/save)
       TF_PLUGIN_CACHE_DIR: $HOME/.terraform.d/plugin-cache
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Ensure plugin cache dir
         run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
 
-      # Restore provider plugin cache (keyed by .terraform.lock.hcl)
       - name: Restore Terraform plugin cache
         id: tf-cache
         uses: actions/cache/restore@v4
@@ -94,8 +68,23 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-tfplugincache-
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+      # ✅ OIDC login to Azure (no client secret)
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:        ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:        ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id:  ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # ✅ Make AzureRM provider use OIDC
+      - name: Export Terraform Azure env (OIDC)
+        run: |
+          echo "ARM_USE_OIDC=true" >> $GITHUB_ENV
+          echo "ARM_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}" >> $GITHUB_ENV
+          echo "ARM_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}" >> $GITHUB_ENV
+          echo "ARM_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
+
+      - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.7.5
 
@@ -109,7 +98,7 @@ jobs:
       - name: Terraform init (remote backend)
         run: |
           terraform init -input=false -reconfigure \
-            -backend-config=backend/dev.backend.hcl
+            -backend-config=backend/prod.backend.hcl
 
       - name: Terraform fmt (check)
         run: terraform fmt -check -recursive
@@ -124,7 +113,7 @@ jobs:
           set -o pipefail
           terraform plan -no-color -input=false -lock=true \
             -detailed-exitcode \
-            -var-file=env/dev.tfvars \
+            -var-file=env/prod.tfvars \
             | tee plan.txt
           ec=$?
           {
@@ -132,13 +121,8 @@ jobs:
             cat plan.txt
             echo EOF
           } >> "$GITHUB_OUTPUT"
-          # Exit 1 only on real errors (syntax/provider/etc.)
-          if [ $ec -eq 1 ]; then
-            exit 1
-          fi
-          # If ec==2 (changes), succeed so reviewers can see the plan
+          if [ $ec -eq 1 ]; then exit 1; fi
 
-      # Save provider plugin cache if this run was a miss
       - name: Save Terraform plugin cache
         if: steps.tf-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -160,32 +144,15 @@ jobs:
               process.env.PLAN || '(no output)',
               '```',
               '',
-              '_Used AzureRM backend with repo secrets (ARM_*). No apply was performed._'
+              '_Auth: GitHub OIDC ➜ Entra federated credential (env **prod**). No apply performed._'
             ].join('\n');
-
-            // Update existing bot comment if present (sticky)
             const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
+              owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number,
             });
             const marker = 'Terraform Plan (state-aware, remote backend)';
-            const existing = comments.find(
-              c => c.user?.type === 'Bot' && c.body && c.body.includes(marker)
-            );
-
+            const existing = comments.find(c => c.user?.type === 'Bot' && c.body?.includes(marker));
             if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body
-              });
+              await github.rest.issues.updateComment({ owner: context.repo.owner, repo: context.repo.repo, comment_id: existing.id, body });
             } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body
-              });
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body });
             }
