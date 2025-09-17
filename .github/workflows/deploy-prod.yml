@@ -1,44 +1,206 @@
-name: Deploy to prod (manual)
+name: Terraform PR Checks
 
 on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - '**/*.tf'
+      - '**/*.tfvars'
+      - 'backend/**'
+      - '.tflint.hcl'
+      - '.github/workflows/**'
   workflow_dispatch:
-    inputs:
-      confirm:
-        description: "Type 'DEPLOY' to confirm"
-        required: true
 
 permissions:
   contents: read
+  pull-requests: write
+  id-token: write
 
 jobs:
-  deploy:
-    if: ${{ github.event.inputs.confirm == 'DEPLOY' }}
+  # ----------------------------
+  # 1) Lint: TFLint (blocks PR)
+  # ----------------------------
+  tflint:
+    name: TFLint
     runs-on: ubuntu-latest
-    environment: prod   # optional environment name
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+
+      - name: TFLint init (download rules)
+        run: tflint --init
+
+      - name: Run TFLint (fail on findings)
+        run: tflint --format compact --recursive
+
+  # ----------------------------
+  # 2) Security scan: tfsec (parallel)
+  # ----------------------------
+  tfsec:
+    name: tfsec (security scan)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: .
+          format: sarif
+          soft_fail: true   # set to 'false' later to block on findings
+      # Optional SARIF upload
+      # - name: Upload tfsec SARIF
+      #   uses: github/codeql-action/upload-sarif@v2
+      #   with:
+      #     sarif_file: tfsec.sarif
+
+  # ---------------------------------------
+  # 3) Plan: state-aware (uses remote state)
+  # ---------------------------------------
+  plan:
+    name: Terraform Plan (state-aware)
+    runs-on: ubuntu-latest
+    needs: [ tflint, tfsec ]
+
+    # OIDC needed for Azure login
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+
+    # Use the dev environment so the federated credential with subject
+    # repo:Artsemi/Realterraform:environment:dev is matched
+    environment: dev
+
     env:
-      ARM_TENANT_ID:        ${{ secrets.ARM_TENANT_ID }}
-      ARM_SUBSCRIPTION_ID:  ${{ secrets.ARM_SUBSCRIPTION_ID }}
-      ARM_CLIENT_ID:        ${{ secrets.ARM_CLIENT_ID }}
-      ARM_CLIENT_SECRET:    ${{ secrets.ARM_CLIENT_SECRET }}
       TF_INPUT: "false"
+      TF_PLUGIN_CACHE_DIR: $HOME/.terraform.d/plugin-cache
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: hashicorp/setup-terraform@v3
+      - name: Ensure plugin cache dir
+        run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
+      - name: Restore Terraform plugin cache
+        id: tf-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: ${{ runner.os }}-tfplugincache-${{ hashFiles('**/.terraform.lock.hcl') }}
+          restore-keys: |
+            ${{ runner.os }}-tfplugincache-
+
+      # 🔐 OIDC login to Azure (no client secret)
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:        ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:        ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id:  ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Make AzureRM provider use OIDC
+      - name: Export Terraform Azure env
+        run: |
+          echo "ARM_USE_OIDC=true" >> $GITHUB_ENV
+          echo "ARM_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}" >> $GITHUB_ENV
+          echo "ARM_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}" >> $GITHUB_ENV
+          echo "ARM_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.7.5
 
-      - name: Restore Terraform plugin cache
-        uses: actions/cache@v4
+      - name: Debug tree
+        run: |
+          pwd
+          ls -la
+          ls -la backend || true
+          ls -la env || true
+
+      - name: Terraform init (remote backend)
+        run: |
+          terraform init -input=false -reconfigure \
+            -backend-config=backend/dev.backend.hcl
+
+      - name: Terraform fmt (check)
+        run: terraform fmt -check -recursive
+
+      - name: Terraform validate
+        run: terraform validate -no-color
+
+      - name: Terraform plan (state-aware)
+        id: plan
+        shell: bash
+        run: |
+          set -o pipefail
+          terraform plan -no-color -input=false -lock=true \
+            -detailed-exitcode \
+            -var-file=env/dev.tfvars \
+            | tee plan.txt
+          ec=$?
+          {
+            echo 'PLAN<<EOF'
+            cat plan.txt
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+          if [ $ec -eq 1 ]; then
+            exit 1   # real error
+          fi
+          # ec==0 (no changes) or ec==2 (changes) both succeed so reviewers can see the plan
+
+      - name: Save Terraform plugin cache
+        if: steps.tf-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
         with:
-          path: ~/.terraform.d/plugin-cache
-          key: Linux-tfplugincache--${{ hashFiles('**/.terraform.lock.hcl') }}
-          restore-keys: |
-            Linux-tfplugincache--
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: ${{ steps.tf-cache.outputs.cache-primary-key }}
 
-      - name: Terraform init (remote backend, prod)
-        run: terraform init -input=false -reconfigure -backend-config=backend/prod.backend.hcl
+      - name: Comment plan to PR (sticky)
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          PLAN: ${{ steps.plan.outputs.PLAN }}
+        with:
+          script: |
+            const body = [
+              '## Terraform Plan (state-aware, remote backend)',
+              '',
+              '```txt',
+              process.env.PLAN || '(no output)',
+              '```',
+              '',
+              '_Auth: GitHub OIDC → Entra federated credential (env **dev**). No apply performed._'
+            ].join('\n');
 
-      - name: Terraform apply (prod)
-        run: terraform apply -auto-approve -var-file=env/prod.tfvars
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const marker = 'Terraform Plan (state-aware, remote backend)';
+            const existing = comments.find(
+              c => c.user?.type === 'Bot' && c.body && c.body.includes(marker)
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body
+              });
+            }
