@@ -28,7 +28,7 @@ steps:
 - task: AzureCLI@2
   displayName: "Azure login + Terraform init/plan"
   inputs:
-    azureSubscription: 'AzureSP-Dev'     # <-- your service connection
+    azureSubscription: 'AzureSP-Dev2'     # <-- your service connection
     scriptType: bash
     scriptLocation: inlineScript
     workingDirectory: '$(TF_DIR)'
