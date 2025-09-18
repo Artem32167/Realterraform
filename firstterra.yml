@@ -1,19 +1,17 @@
- trigger:
+trigger:
 - main
 
 pool:
-  name: 'my pool'      # <-- your self-hosted agent pool
+  name: 'my pool'
 
 variables:
-  TF_DIR: '.'                          # path with your .tf files (e.g., '.' or 'infra')
+  TF_DIR: '.'
   TF_BACKEND: 'backend/prod.backend.hcl'
   TF_VARS: 'env/prod.tfvars'
 
 steps:
-# Pull repo onto the VM
 - checkout: self
 
-# Ensure base tools on the VM (idempotent)
 - script: |
     set -e
     sudo apt-get update -y
@@ -24,45 +22,39 @@ steps:
     az version
   displayName: "Ensure unzip & Azure CLI"
 
-# Install Terraform (Marketplace task)
 - task: TerraformInstaller@0
   displayName: "Install Terraform 1.13.3"
   inputs:
     terraformVersion: '1.13.3'
 
-# ---- OIDC/Federated SC flow (no client secret) ----
 - task: AzureCLI@2
   displayName: "Azure login (OIDC) + Terraform init/plan"
   inputs:
-    azureSubscription: 'AzureSP-Dev2'   # <-- your Azure RM Service Connection that uses federation/OIDC
-    addSpnToEnvironment: true           # exposes $servicePrincipalId, $tenantId, $subscriptionId (no secret)
+    azureSubscription: 'AzureSP-Dev2'
+    addSpnToEnvironment: true
     scriptType: bash
     scriptLocation: inlineScript
     workingDirectory: '$(TF_DIR)'
     inlineScript: |
-      # OIDC mode: do NOT use 'set -u' because servicePrincipalKey is not present
       set -eo pipefail
 
       echo "== Azure context =="
       az account show --output table || true
 
-      echo "== Export OIDC env for Terraform (azurerm provider) =="
+      # OIDC env for azurerm provider (no client secret)
       export ARM_USE_OIDC=true
       export ARM_CLIENT_ID="$servicePrincipalId"
       export ARM_TENANT_ID="$tenantId"
       export ARM_SUBSCRIPTION_ID="$subscriptionId"
 
-      echo "== Terraform version =="
       terraform -version
 
-      echo "== Terraform init =="
       if [ -f "$(TF_BACKEND)" ]; then
         terraform init -input=false -reconfigure -backend-config="$(TF_BACKEND)"
       else
         terraform init -input=false
       fi
 
-      echo "== Terraform plan (no lock for read-only plan) =="
       if [ -f "$(TF_VARS)" ]; then
         terraform plan -input=false -no-color -lock=false -var-file="$(TF_VARS)"
       else
