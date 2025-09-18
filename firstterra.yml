@@ -2,17 +2,16 @@ trigger:
 - main
 
 pool:
-  name: 'my pool'            # your self-hosted agent pool
+  name: 'my pool'
 
 variables:
-  TF_DIR: '.'                # folder with your .tf (change if needed)
-  TF_BACKEND: 'backend/prod.backend.hcl'   # adjust/remove if not used
-  TF_VARS: 'env/prod.tfvars'               # adjust/remove if not used
+  TF_DIR: '.'
+  TF_BACKEND: 'backend/prod.backend.hcl'
+  TF_VARS: 'env/prod.tfvars'
 
 steps:
 - checkout: self
 
-# Ensure Azure CLI exists on the VM (runs quick if already installed)
 - script: |
     if ! command -v az >/dev/null 2>&1; then
       curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
@@ -24,32 +23,40 @@ steps:
   inputs:
     terraformVersion: '1.7.5'
 
-# Use your Azure RM service connection to login, then run TF
+# ✅ Expose SP creds from the service connection + export ARM_* for Terraform
 - task: AzureCLI@2
   displayName: "Azure login + Terraform init/plan"
   inputs:
-    azureSubscription: 'AzureSP-Dev2'     # <-- your service connection
+    azureSubscription: 'AzureSP-Dev2'   # your service connection name
+    addSpnToEnvironment: true           # <-- IMPORTANT
     scriptType: bash
     scriptLocation: inlineScript
     workingDirectory: '$(TF_DIR)'
-    inlineScript: |
-      set -euo pipefail
-      echo "== Azure context =="
-      az account show --output table
+  inlineScript: |
+    set -euo pipefail
 
-      echo "== Terraform =="
-      terraform -version
+    # Map service connection vars to Terraform expected env vars
+    export ARM_CLIENT_ID="$servicePrincipalId"
+    export ARM_CLIENT_SECRET="$servicePrincipalKey"
+    export ARM_TENANT_ID="$tenantId"
+    export ARM_SUBSCRIPTION_ID="$subscriptionId"
 
-      echo "== Init =="
-      if [ -f "$(TF_BACKEND)" ]; then
-        terraform init -input=false -reconfigure -backend-config="$(TF_BACKEND)"
-      else
-        terraform init -input=false
-      fi
+    echo "== Azure context =="
+    az account show --output table || true
 
-      echo "== Plan =="
-      if [ -f "$(TF_VARS)" ]; then
-        terraform plan -input=false -no-color -lock=false -var-file="$(TF_VARS)"
-      else
-        terraform plan -input=false -no-color -lock=false
-      fi
+    echo "== Terraform =="
+    terraform -version
+
+    echo "== Init =="
+    if [ -f "$(TF_BACKEND)" ]; then
+      terraform init -input=false -reconfigure -backend-config="$(TF_BACKEND)"
+    else
+      terraform init -input=false
+    fi
+
+    echo "== Plan =="
+    if [ -f "$(TF_VARS)" ]; then
+      terraform plan -input=false -no-color -lock=false -var-file="$(TF_VARS)"
+    else
+      terraform plan -input=false -no-color -lock=false
+    fi
