@@ -1,66 +1,30 @@
-trigger:
-- main
-
-pool:
-  name: 'my pool'     # <-- your self-hosted agent pool
-
-variables:
-  TF_DIR: '.'                         # where your .tf files are (e.g. '.' or 'infra')
-  TF_BACKEND: 'backend/prod.backend.hcl'
-  TF_VARS: 'env/prod.tfvars'
-
-steps:
-- checkout: self
-
-# Ensure base tools on the VM (idempotent)
-- script: |
-    set -e
-    sudo apt-get update -y
-    sudo apt-get install -y unzip
-    if ! command -v az >/dev/null 2>&1; then
-      curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
-    fi
-    az version
-  displayName: "Ensure unzip & Azure CLI"
-
-# Install Terraform via Marketplace task (works after you installed extension)
-- task: TerraformInstaller@0
-  displayName: "Install Terraform 1.7.5"
-  inputs:
-    terraformVersion: '1.7.5'
-
-# Azure login using Service Connection (Service Principal) + run Terraform
 - task: AzureCLI@2
-  displayName: "Azure login + Terraform init/plan"
+  displayName: "Azure login + Terraform init/plan (OIDC)"
   inputs:
-    azureSubscription: 'AzureSP-Dev2'   # <-- exact name of your Service Connection
-    addSpnToEnvironment: true           # exposes $servicePrincipalId/$servicePrincipalKey/$tenantId/$subscriptionId
+    azureSubscription: 'AzureSP-Dev2'     # your existing SC (federated/OIDC)
+    addSpnToEnvironment: true             # gives servicePrincipalId, tenantId, subscriptionId
     scriptType: bash
     scriptLocation: inlineScript
     workingDirectory: '$(TF_DIR)'
+    # NOTE: don't use `set -u` here since some vars won't exist in OIDC mode
     inlineScript: |
-      set -euo pipefail
+      set -eo pipefail
 
-      # Map service connection vars -> Terraform env expected by azurerm provider
+      # OIDC for Terraform
+      export ARM_USE_OIDC=true
       export ARM_CLIENT_ID="$servicePrincipalId"
-      export ARM_CLIENT_SECRET="$servicePrincipalKey"
       export ARM_TENANT_ID="$tenantId"
       export ARM_SUBSCRIPTION_ID="$subscriptionId"
 
-      echo "== Azure context =="
       az account show --output table || true
-
-      echo "== Terraform =="
       terraform -version
 
-      echo "== Init =="
       if [ -f "$(TF_BACKEND)" ]; then
         terraform init -input=false -reconfigure -backend-config="$(TF_BACKEND)"
       else
         terraform init -input=false
       fi
 
-      echo "== Plan (no lock, read-only) =="
       if [ -f "$(TF_VARS)" ]; then
         terraform plan -input=false -no-color -lock=false -var-file="$(TF_VARS)"
       else
