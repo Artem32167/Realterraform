@@ -1,0 +1,55 @@
+trigger:
+- main
+
+pool:
+  name: 'my pool'            # your self-hosted agent pool
+
+variables:
+  TF_DIR: '.'                # folder with your .tf (change if needed)
+  TF_BACKEND: 'backend/prod.backend.hcl'   # adjust/remove if not used
+  TF_VARS: 'env/prod.tfvars'               # adjust/remove if not used
+
+steps:
+- checkout: self
+
+# Ensure Azure CLI exists on the VM (runs quick if already installed)
+- script: |
+    if ! command -v az >/dev/null 2>&1; then
+      curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+    fi
+    az version
+  displayName: "Ensure Azure CLI"
+
+- task: TerraformInstaller@0
+  inputs:
+    terraformVersion: '1.7.5'
+
+# Use your Azure RM service connection to login, then run TF
+- task: AzureCLI@2
+  displayName: "Azure login + Terraform init/plan"
+  inputs:
+    azureSubscription: 'AzureSP-Dev'     # <-- your service connection
+    scriptType: bash
+    scriptLocation: inlineScript
+    workingDirectory: '$(TF_DIR)'
+    inlineScript: |
+      set -euo pipefail
+      echo "== Azure context =="
+      az account show --output table
+
+      echo "== Terraform =="
+      terraform -version
+
+      echo "== Init =="
+      if [ -f "$(TF_BACKEND)" ]; then
+        terraform init -input=false -reconfigure -backend-config="$(TF_BACKEND)"
+      else
+        terraform init -input=false
+      fi
+
+      echo "== Plan =="
+      if [ -f "$(TF_VARS)" ]; then
+        terraform plan -input=false -no-color -lock=false -var-file="$(TF_VARS)"
+      else
+        terraform plan -input=false -no-color -lock=false
+      fi
