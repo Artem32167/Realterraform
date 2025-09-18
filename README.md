@@ -1,21 +1,20 @@
+# Introduction 
+TODO: Give a short introduction of your project. Let this section explain the objectives or the motivation behind this project. 
 
-# Terraform Azure Basics — Minimal Scaffold v3.0
+# Getting Started
+TODO: Guide users through getting your code up and running on their own system. In this section you can talk about:
+1.	Installation process
+2.	Software dependencies
+3.	Latest releases
+4.	API references
 
-# Terraform Azure Basics — Minimal Scaffold v4.0
+# Build and Test
+TODO: Describe and show how to build your code and run the tests. 
 
+# Contribute
+TODO: Explain how other users and developers can contribute to make your code better. 
 
-## Prereqs
-- Terraform ~> 1.7
-- Azure SP or login; export:
-  - ARM_CLIENT_ID, ARM_CLIENT_SECRET, ARM_TENANT_ID, ARM_SUBSCRIPTION_ID
-- Azure Storage Account + container `tfstate` exists
-
-## Envs
-- `env/dev.tfvars`, `env/prod.tfvars` hold environment-specific values.
-- Backends at `backend/dev.backend.hcl` and `backend/prod.backend.hcl`.
-
-## Dev
-```bash
-terraform init -backend-config=backend/dev.backend.hcl
-terraform plan -var-file=env/dev.tfvars -out s1.tfplan
-terraform apply s1.tfplan
+If you want to learn more about creating good readme files then refer the following [guidelines](https://docs.microsoft.com/en-us/azure/devops/repos/git/create-a-readme?view=azure-devops). You can also seek inspiration from the below readme files:
+- [ASP.NET Core](https://github.com/aspnet/Home)
+- [Visual Studio Code](https://github.com/Microsoft/vscode)
+- [Chakra Core](https://github.com/Microsoft/ChakraCore)
