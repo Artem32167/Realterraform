@@ -1,3 +1,4 @@
+name: ArtefactsTab
 # Disable CI trigger
 trigger: none
 
