@@ -1,5 +1,8 @@
-trigger:
-- main
+# Disable CI trigger
+trigger: none
+
+# Disable PR trigger
+pr: none
 
 pool:
   name: 'my pool'
