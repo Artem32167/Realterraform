@@ -4,6 +4,12 @@ trigger: none
 # Disable PR trigger
 pr: none
 
+variables:
+  TF_DIR: '.'
+  TF_BACKEND: 'backend/prod.backend.hcl'
+  TF_VARS: 'env/prod.tfvars'
+  TF_PLAN_FILE: 'tfplan'
+
 pool:
   name: 'my pool'
 
