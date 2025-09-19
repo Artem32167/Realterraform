@@ -1,0 +1,31 @@
+trigger:
+- main
+
+pool:
+  name: 'my pool'
+
+steps:
+- checkout: self
+
+# Install Terraform
+- task: TerraformInstaller@0
+  inputs:
+    terraformVersion: '1.3.0'
+
+# Init + Plan
+- script: |
+    terraform init -input=false
+    terraform plan -input=false -out=tfplan
+  displayName: "Terraform init & plan"
+
+# Convert binary plan to JSON for readability (optional)
+- script: |
+    terraform show -json tfplan > tfplan.json
+  displayName: "Convert plan to JSON"
+
+# Publish the plan file(s) as pipeline artifact
+- task: PublishBuildArtifacts@1
+  inputs:
+    PathtoPublish: '$(System.DefaultWorkingDirectory)'
+    ArtifactName: 'terraform-plan'
+    publishLocation: 'Container'
