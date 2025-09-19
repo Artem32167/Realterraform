@@ -7,21 +7,38 @@ pool:
 steps:
 - checkout: self
 
-# Install Terraform
+# Install Terraform (Marketplace task – will show warning, but works)
 - task: TerraformInstaller@0
   inputs:
     terraformVersion: '1.13.3'
 
-# Init + Plan
-- script: |
-    terraform init -input=false
-    terraform plan -input=false -out=tfplan
-  displayName: "Terraform init & plan"
+# Login to Azure (OIDC Service Connection)
+- task: AzureCLI@2
+  displayName: "Azure login (OIDC)"
+  inputs:
+    azureSubscription: 'AzureSP-Dev2'   # <-- your service connection name
+    addSpnToEnvironment: true
+    scriptType: bash
+    scriptLocation: inlineScript
+    inlineScript: |
+      set -eo pipefail
+      echo "== Azure context =="
+      az account show --output table
 
-# Convert binary plan to JSON for readability (optional)
-- script: |
-    terraform show -json tfplan > tfplan.json
-  displayName: "Convert plan to JSON"
+      # Export OIDC env vars for azurerm provider
+      export ARM_USE_OIDC=true
+      export ARM_CLIENT_ID="$servicePrincipalId"
+      export ARM_TENANT_ID="$tenantId"
+      export ARM_SUBSCRIPTION_ID="$subscriptionId"
+
+      terraform -version
+
+      # Terraform init + plan
+      terraform init -input=false
+      terraform plan -input=false -out=tfplan
+
+      # Convert plan to JSON
+      terraform show -json tfplan > tfplan.json
 
 # Publish the plan file(s) as pipeline artifact
 - task: PublishBuildArtifacts@1
