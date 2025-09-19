@@ -1,0 +1,99 @@
+trigger:
+- main
+
+variables:
+  TF_DIR: '.'
+  TF_BACKEND: 'backend/prod.backend.hcl'
+  TF_VARS: 'env/prod.tfvars'
+  TF_PLAN_FILE: 'tfplan'
+
+stages:
+# ---------- PLAN ----------
+- stage: Plan
+  displayName: "Terraform Plan"
+  jobs:
+  - job: PlanJob
+    displayName: "Plan (produce artifact)"
+    pool: { name: 'my pool' }    # self-hosted agent
+    steps:
+    - checkout: self
+    - task: TerraformInstaller@0
+      inputs: { terraformVersion: '1.13.3' }
+
+    - task: AzureCLI@2
+      displayName: "Login (OIDC) + init/plan"
+      inputs:
+        azureSubscription: 'AzureSP-Dev2'   # your OIDC service connection
+        addSpnToEnvironment: true
+        scriptType: bash
+        scriptLocation: inlineScript
+        workingDirectory: '$(TF_DIR)'
+        inlineScript: |
+          set -eo pipefail
+          export ARM_USE_OIDC=true
+          export ARM_CLIENT_ID="$servicePrincipalId"
+          export ARM_TENANT_ID="$tenantId"
+          export ARM_SUBSCRIPTION_ID="$subscriptionId"
+
+          terraform -version
+          if [ -f "$(TF_BACKEND)" ]; then
+            terraform init -input=false -reconfigure -backend-config="$(TF_BACKEND)"
+          else
+            terraform init -input=false
+          fi
+
+          if [ -f "$(TF_VARS)" ]; then
+            terraform plan -input=false -no-color -out "$(TF_PLAN_FILE)" -var-file="$(TF_VARS)"
+          else
+            terraform plan -input=false -no-color -out "$(TF_PLAN_FILE)"
+          fi
+
+    # publish plan as artifact
+    - publish: '$(TF_DIR)/$(TF_PLAN_FILE)'
+      artifact: terraform-plan
+
+# ---------- APPLY ----------
+- stage: Apply
+  displayName: "Terraform Apply"
+  dependsOn: Plan
+  condition: succeeded()
+  jobs:
+  - deployment: ApplyJob
+    displayName: "Apply approved plan"
+    environment: 'prod'   # approvals configured in DevOps UI
+    strategy:
+      runOnce:
+        deploy:
+          pool: { name: 'my pool' }
+          steps:
+          - checkout: self
+          - download: current
+            artifact: terraform-plan
+
+          - task: TerraformInstaller@0
+            inputs: { terraformVersion: '1.13.3' }
+
+          - task: AzureCLI@2
+            displayName: "Login (OIDC) + apply"
+            inputs:
+              azureSubscription: 'AzureSP-Dev2'
+              addSpnToEnvironment: true
+              scriptType: bash
+              scriptLocation: inlineScript
+              workingDirectory: '$(TF_DIR)'
+              inlineScript: |
+                set -eo pipefail
+                export ARM_USE_OIDC=true
+                export ARM_CLIENT_ID="$servicePrincipalId"
+                export ARM_TENANT_ID="$tenantId"
+                export ARM_SUBSCRIPTION_ID="$subscriptionId"
+
+                terraform -version
+                if [ -f "$(TF_BACKEND)" ]; then
+                  terraform init -input=false -reconfigure -backend-config="$(TF_BACKEND)"
+                else
+                  terraform init -input=false
+                fi
+
+                # Path where the download step placed the plan file:
+                terraform apply -input=false -auto-approve "$(Pipeline.Workspace)/terraform-plan/$(TF_PLAN_FILE)"
