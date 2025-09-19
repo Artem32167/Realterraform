@@ -1,13 +1,15 @@
+# -----------------------------
+# pipelines/artifacts.yml
+# -----------------------------
 name: ArtefactsTab
-# Disable CI trigger
-trigger: none
 
-# Disable PR trigger
+# Manual only
+trigger: none
 pr: none
 
 variables:
   TF_DIR: '.'
-  TF_BACKEND: 'backend/prod.backend.hcl'
+  TF_BACKEND: 'backend/prod.backend.hcl'   # must contain use_azuread_auth=true etc.
   TF_VARS: 'env/prod.tfvars'
   TF_PLAN_FILE: 'tfplan'
 
@@ -17,25 +19,24 @@ pool:
 steps:
 - checkout: self
 
-# Install Terraform (Marketplace task – will show warning, but works)
+# Tools (avoid the Node10 warning by installing TF yourself if you prefer)
 - task: TerraformInstaller@0
   inputs:
     terraformVersion: '1.13.3'
 
-# Login to Azure (OIDC Service Connection)
+# Azure login (OIDC)
 - task: AzureCLI@2
-  displayName: "Azure login (OIDC)"
+  displayName: "Azure login (OIDC) + plan"
   inputs:
-    azureSubscription: 'AzureSP-Dev2'   # <-- your service connection name
+    azureSubscription: 'AzureSP-Dev2'        # your service connection
     addSpnToEnvironment: true
     scriptType: bash
     scriptLocation: inlineScript
+    workingDirectory: '$(TF_DIR)'
     inlineScript: |
       set -eo pipefail
-      echo "== Azure context =="
-      az account show --output table
 
-      # Export OIDC env vars for azurerm provider
+      # OIDC env for azurerm provider
       export ARM_USE_OIDC=true
       export ARM_CLIENT_ID="$servicePrincipalId"
       export ARM_TENANT_ID="$tenantId"
@@ -43,16 +44,36 @@ steps:
 
       terraform -version
 
-      # Terraform init + plan
-      terraform init -input=false
-      terraform plan -input=false -out=tfplan
+      # IMPORTANT: use the backend config file so init can auth to state
+      if [ -f "$(TF_BACKEND)" ]; then
+        terraform init -input=false -reconfigure -backend-config="$(TF_BACKEND)"
+      else
+        terraform init -input=false
+      fi
 
-      # Convert plan to JSON
-      terraform show -json tfplan > tfplan.json
+      # Create the plan
+      if [ -f "$(TF_VARS)" ]; then
+        terraform plan -input=false -no-color -out "$(TF_PLAN_FILE)" -var-file="$(TF_VARS)"
+      else
+        terraform plan -input=false -no-color -out "$(TF_PLAN_FILE)"
+      fi
 
-# Publish the plan file(s) as pipeline artifact
-- task: PublishBuildArtifacts@1
+      # Optional: make a readable JSON version
+      terraform show -json "$(TF_PLAN_FILE)" > tfplan.json
+
+# Publish only the plan files as a Pipeline Artifact
+- task: PublishPipelineArtifact@1
+  displayName: "Publish plan artifact"
   inputs:
-    PathtoPublish: '$(System.DefaultWorkingDirectory)'
-    ArtifactName: 'terraform-plan'
-    publishLocation: 'Container'
+    targetPath: '$(TF_DIR)'               # root of the files to publish
+    artifact: 'terraform-plan'
+    publishLocation: 'pipeline'
+    # Include only wanted files using a simple layout:
+    # If you want to limit to the files, switch to:
+    # targetPath: '$(TF_DIR)'
+    # and ensure only tfplan / tfplan.json are present there,
+    # or publish exact files with this alternative:
+    # - publish: '$(TF_DIR)/tfplan'
+    #   artifact: terraform-plan
+    # - publish: '$(TF_DIR)/tfplan.json'
+    #   artifact: terraform-plan-json
